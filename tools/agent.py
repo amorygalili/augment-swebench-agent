@@ -58,6 +58,7 @@ try breaking down the task into smaller steps and call this tool multiple times.
         use_prompt_budgeting: bool = True,
         ask_user_permission: bool = False,
         docker_container_id: Optional[str] = None,
+        json_handler=None,
     ):
         """Initialize the agent.
 
@@ -75,6 +76,7 @@ try breaking down the task into smaller steps and call this tool multiple times.
         self.max_turns = max_turns
         self.workspace_manager = workspace_manager
         self.interrupted = False
+        self.json_handler = json_handler
         self.dialog = DialogMessages(
             logger_for_agent_logs=logger_for_agent_logs,
             use_prompt_budgeting=use_prompt_budgeting,
@@ -84,12 +86,13 @@ try breaking down the task into smaller steps and call this tool multiple times.
         self.complete_tool = CompleteTool()
 
         if docker_container_id is not None:
-            print(
-                colored(
-                    f"Enabling docker bash tool with container {docker_container_id}",
-                    "blue",
+            if not self.json_handler:
+                print(
+                    colored(
+                        f"Enabling docker bash tool with container {docker_container_id}",
+                        "blue",
+                    )
                 )
-            )
             self.logger_for_agent_logs.info(
                 f"Enabling docker bash tool with container {docker_container_id}"
             )
@@ -116,8 +119,12 @@ try breaking down the task into smaller steps and call this tool multiple times.
     ) -> ToolImplOutput:
         instruction = tool_input["instruction"]
 
-        user_input_delimiter = "-" * 45 + " USER INPUT " + "-" * 45 + "\n" + instruction
-        self.logger_for_agent_logs.info(f"\n{user_input_delimiter}\n")
+        if self.json_handler:
+            # JSON output mode - don't log user input here as it's handled in CLI
+            pass
+        else:
+            user_input_delimiter = "-" * 45 + " USER INPUT " + "-" * 45 + "\n" + instruction
+            self.logger_for_agent_logs.info(f"\n{user_input_delimiter}\n")
 
         # print("Agent starting with instruction:", instruction)
 
@@ -129,14 +136,21 @@ try breaking down the task into smaller steps and call this tool multiple times.
         while remaining_turns > 0:
             remaining_turns -= 1
 
-            delimiter = "-" * 45 + " NEW TURN " + "-" * 45
-            self.logger_for_agent_logs.info(f"\n{delimiter}\n")
+            if self.json_handler:
+                metadata = {}
+                if self.dialog.use_prompt_budgeting:
+                    current_tok_count = self.dialog.count_tokens()
+                    metadata["token_count"] = current_tok_count
+                self.json_handler.output_json_message("new_turn", f"Turn {self.max_turns - remaining_turns + 1}", metadata)
+            else:
+                delimiter = "-" * 45 + " NEW TURN " + "-" * 45
+                self.logger_for_agent_logs.info(f"\n{delimiter}\n")
 
-            if self.dialog.use_prompt_budgeting:
-                current_tok_count = self.dialog.count_tokens()
-                self.logger_for_agent_logs.info(
-                    f"(Current token count: {current_tok_count})\n"
-                )
+                if self.dialog.use_prompt_budgeting:
+                    current_tok_count = self.dialog.count_tokens()
+                    self.logger_for_agent_logs.info(
+                        f"(Current token count: {current_tok_count})\n"
+                    )
 
             # Get tool parameters for available tools
             tool_params = [tool.get_tool_param() for tool in self.tools]
@@ -162,7 +176,10 @@ try breaking down the task into smaller steps and call this tool multiple times.
 
                 if len(pending_tool_calls) == 0:
                     # No tools were called, so assume the task is complete
-                    self.logger_for_agent_logs.info("[no tools were called]")
+                    if self.json_handler:
+                        self.json_handler.output_json_message("debug", "[no tools were called]")
+                    else:
+                        self.logger_for_agent_logs.info("[no tools were called]")
                     return ToolImplOutput(
                         tool_output=self.dialog.get_last_model_text_response(),
                         tool_result_message="Task completed",
@@ -179,9 +196,12 @@ try breaking down the task into smaller steps and call this tool multiple times.
                 ]
                 if len(text_results) > 0:
                     text_result = text_results[0]
-                    self.logger_for_agent_logs.info(
-                        f"Top-level agent planning next step: {text_result.text}\n",
-                    )
+                    if self.json_handler:
+                        self.json_handler.output_json_message("debug", f"Top-level agent planning next step: {text_result.text}")
+                    else:
+                        self.logger_for_agent_logs.info(
+                            f"Top-level agent planning next step: {text_result.text}\n",
+                        )
 
                 try:
                     tool = next(t for t in self.tools if t.name == tool_call.tool_name)
@@ -193,12 +213,21 @@ try breaking down the task into smaller steps and call this tool multiple times.
                 try:
                     result = tool.run(tool_call.tool_input, deepcopy(self.dialog))
 
-                    tool_input_str = "\n".join(
-                        [f" - {k}: {v}" for k, v in tool_call.tool_input.items()]
-                    )
-                    log_message = f"Calling tool {tool_call.tool_name} with input:\n{tool_input_str}"
-                    log_message += f"\nTool output: \n{result}\n\n"
-                    self.logger_for_agent_logs.info(log_message)
+                    if self.json_handler:
+                        # Output structured JSON for tool call and result
+                        self.json_handler.output_json_message(
+                            "tool_call",
+                            f"Calling tool {tool_call.tool_name}",
+                            {"tool_name": tool_call.tool_name, "tool_input": tool_call.tool_input}
+                        )
+                        self.json_handler.output_json_message("tool_output", str(result))
+                    else:
+                        tool_input_str = "\n".join(
+                            [f" - {k}: {v}" for k, v in tool_call.tool_input.items()]
+                        )
+                        log_message = f"Calling tool {tool_call.tool_name} with input:\n{tool_input_str}"
+                        log_message += f"\nTool output: \n{result}\n\n"
+                        self.logger_for_agent_logs.info(log_message)
 
                     # Handle both ToolResult objects and tuples
                     if isinstance(result, tuple):

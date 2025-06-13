@@ -7,9 +7,11 @@ It instantiates an Agent and prompts the user for input, which is then passed to
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 from prompt_toolkit import prompt
@@ -24,6 +26,29 @@ from utils.workspace_manager import WorkspaceManager
 
 MAX_OUTPUT_TOKENS_PER_TURN = 32768
 MAX_TURNS = 200
+
+
+class JsonOutputHandler:
+    """Handles JSON output formatting for structured communication."""
+
+    def __init__(self, output_file=None):
+        self.output_file = output_file
+
+    def output_json_message(self, message_type: str, content: str, metadata: dict = None):
+        """Output a structured JSON message."""
+        message = {
+            "type": message_type,
+            "content": content,
+            "timestamp": str(time.time()),
+            "metadata": metadata or {}
+        }
+        json_str = json.dumps(message)
+        print(json_str, flush=True)
+
+        # Also write to file if specified
+        if self.output_file:
+            with open(self.output_file, 'a') as f:
+                f.write(json_str + '\n')
 
 
 def main():
@@ -56,6 +81,12 @@ def main():
         default=False,
     )
     parser.add_argument(
+        "--json-output",
+        help="Output structured JSON messages instead of plain text",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
         "--use-container-workspace",
         type=str,
         default=None,
@@ -76,12 +107,18 @@ def main():
 
     args = parser.parse_args()
 
+    # Initialize JSON output handler if needed
+    json_handler = None
+
+    if args.json_output:
+        json_handler = JsonOutputHandler(args.logs_path if args.logs_path != "agent_logs.txt" else None)
+
     if os.path.exists(args.logs_path):
         os.remove(args.logs_path)
     logger_for_agent_logs = logging.getLogger("agent_logs")
     logger_for_agent_logs.setLevel(logging.DEBUG)
     logger_for_agent_logs.addHandler(logging.FileHandler(args.logs_path))
-    if not args.minimize_stdout_logs:
+    if not args.minimize_stdout_logs and not args.json_output:
         logger_for_agent_logs.addHandler(logging.StreamHandler())
     else:
         logger_for_agent_logs.propagate = False
@@ -95,8 +132,8 @@ def main():
     # Initialize console
     console = Console()
 
-    # Print welcome message
-    if not args.minimize_stdout_logs:
+    # Print welcome message (only if not in JSON mode)
+    if not args.json_output and not args.minimize_stdout_logs:
         console.print(
             Panel(
                 "[bold]Agent CLI[/bold]\n\n"
@@ -107,7 +144,7 @@ def main():
                 padding=(1, 2),
             )
         )
-    else:
+    elif not args.json_output:
         logger_for_agent_logs.info(
             "Agent CLI started. Waiting for user input. Press Ctrl+C to exit. Type 'exit' or 'quit' to end the session."
         )
@@ -135,6 +172,7 @@ def main():
         max_turns=MAX_TURNS,
         ask_user_permission=args.needs_permission,
         docker_container_id=args.docker_container_id,
+        json_handler=json_handler,
     )
 
     if args.problem_statement is not None:
@@ -150,42 +188,74 @@ def main():
         instruction = None
 
     history = InMemoryHistory()
+    # Send ready message in JSON mode
+    if json_handler:
+        json_handler.output_json_message(
+            "system",
+            "Agent CLI ready. Send messages to interact with the AI assistant.",
+            {"workspace": workspace_path.as_posix(), "json_mode": True}
+        )
+
     # Main interaction loop
     try:
         while True:
             # Get user input
             if instruction is None:
-                user_input = prompt("User input: ", history=history)
-                history.append_string(user_input)
+                if args.json_output:
+                    # In JSON mode, read from stdin without prompt
+                    try:
+                        user_input = input()
+                    except EOFError:
+                        break
+                else:
+                    user_input = prompt("User input: ", history=history)
+                    history.append_string(user_input)
 
                 # Check for exit commands
                 if user_input.lower() in ["exit", "quit"]:
-                    console.print("[bold]Exiting...[/bold]")
+                    if not args.json_output:
+                        console.print("[bold]Exiting...[/bold]")
                     logger_for_agent_logs.info("Exiting...")
                     break
             else:
                 user_input = instruction
-                logger_for_agent_logs.info(
-                    f"User instruction:\n{user_input}\n-------------"
-                )
+                if not args.json_output:
+                    logger_for_agent_logs.info(
+                        f"User instruction:\n{user_input}\n-------------"
+                    )
 
             # Run the agent with the user input
-            logger_for_agent_logs.info("\nAgent is thinking...")
+            if json_handler:
+                json_handler.output_json_message("thinking", "Agent is thinking...")
+                json_handler.output_json_message("user_input", user_input)
+            else:
+                logger_for_agent_logs.info("\nAgent is thinking...")
+
             try:
                 result = agent.run_agent(user_input, resume=True)
-                logger_for_agent_logs.info(f"Agent: {result}")
+                if json_handler:
+                    json_handler.output_json_message("agent_response", result)
+                else:
+                    logger_for_agent_logs.info(f"Agent: {result}")
             except Exception as e:
-                logger_for_agent_logs.info(f"Error: {str(e)}")
+                error_msg = f"Error: {str(e)}"
+                if json_handler:
+                    json_handler.output_json_message("error", error_msg)
+                else:
+                    logger_for_agent_logs.info(error_msg)
 
-            logger_for_agent_logs.info("\n" + "-" * 40 + "\n")
+            if not json_handler:
+                logger_for_agent_logs.info("\n" + "-" * 40 + "\n")
 
             if instruction is not None:
                 break
 
     except KeyboardInterrupt:
-        console.print("\n[bold]Session interrupted. Exiting...[/bold]")
+        if not args.json_output:
+            console.print("\n[bold]Session interrupted. Exiting...[/bold]")
 
-    console.print("[bold]Goodbye![/bold]")
+    if not args.json_output:
+        console.print("[bold]Goodbye![/bold]")
 
 
 if __name__ == "__main__":
