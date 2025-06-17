@@ -137,11 +137,8 @@ try breaking down the task into smaller steps and call this tool multiple times.
             remaining_turns -= 1
 
             if self.json_handler:
-                metadata = {}
-                if self.dialog.use_prompt_budgeting:
-                    current_tok_count = self.dialog.count_tokens()
-                    metadata["token_count"] = current_tok_count
-                self.json_handler.output_json_message("new_turn", f"Turn {self.max_turns - remaining_turns + 1}", metadata)
+                # Skip outputting turn numbers - they're not useful for users
+                pass
             else:
                 delimiter = "-" * 45 + " NEW TURN " + "-" * 45
                 self.logger_for_agent_logs.info(f"\n{delimiter}\n")
@@ -177,7 +174,8 @@ try breaking down the task into smaller steps and call this tool multiple times.
                 if len(pending_tool_calls) == 0:
                     # No tools were called, so assume the task is complete
                     if self.json_handler:
-                        self.json_handler.output_json_message("debug", "[no tools were called]")
+                        # Skip technical "[no tools were called]" message - not useful for users
+                        pass
                     else:
                         self.logger_for_agent_logs.info("[no tools were called]")
                     return ToolImplOutput(
@@ -197,7 +195,8 @@ try breaking down the task into smaller steps and call this tool multiple times.
                 if len(text_results) > 0:
                     text_result = text_results[0]
                     if self.json_handler:
-                        self.json_handler.output_json_message("debug", f"Top-level agent planning next step: {text_result.text}")
+                        # Output the agent's planning text without verbose prefix
+                        self.json_handler.output_json_message("debug", text_result.text)
                     else:
                         self.logger_for_agent_logs.info(
                             f"Top-level agent planning next step: {text_result.text}\n",
