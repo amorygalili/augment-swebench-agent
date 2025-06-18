@@ -104,6 +104,31 @@ def main():
         action="store_true",
         default=False,
     )
+    parser.add_argument(
+        "--llm-provider",
+        type=str,
+        default=None,
+        choices=["anthropic", "openai"],
+        help="LLM provider to use (default: anthropic, or from LLM_PROVIDER env var)",
+    )
+    parser.add_argument(
+        "--llm-model",
+        type=str,
+        default=None,
+        help="LLM model name (uses provider default if not specified, or from LLM_MODEL env var)",
+    )
+    parser.add_argument(
+        "--llm-temperature",
+        type=float,
+        default=None,
+        help="Temperature for LLM generation (default: 0.0, or from LLM_TEMPERATURE env var)",
+    )
+    parser.add_argument(
+        "--llm-max-tokens",
+        type=int,
+        default=None,
+        help="Maximum tokens for LLM generation (default: 8192, or from LLM_MAX_TOKENS env var)",
+    )
 
     args = parser.parse_args()
 
@@ -123,10 +148,23 @@ def main():
     else:
         logger_for_agent_logs.propagate = False
 
-    # Check if ANTHROPIC_API_KEY is set
-    if "ANTHROPIC_API_KEY" not in os.environ:
-        print("Error: ANTHROPIC_API_KEY environment variable is not set.")
-        print("Please set it to your Anthropic API key.")
+    # Determine LLM provider from CLI args or environment
+    llm_provider = args.llm_provider or os.getenv("LLM_PROVIDER", "anthropic")
+
+    # Check if required API key is set based on provider
+    if llm_provider == "anthropic":
+        if "ANTHROPIC_API_KEY" not in os.environ:
+            print("Error: ANTHROPIC_API_KEY environment variable is not set.")
+            print("Please set it to your Anthropic API key.")
+            sys.exit(1)
+    elif llm_provider == "openai":
+        if "OPENAI_API_KEY" not in os.environ:
+            print("Error: OPENAI_API_KEY environment variable is not set.")
+            print("Please set it to your OpenAI API key.")
+            sys.exit(1)
+    else:
+        print(f"Error: Unsupported LLM provider: {llm_provider}")
+        print("Supported providers: anthropic, openai")
         sys.exit(1)
 
     # Initialize console
@@ -149,12 +187,39 @@ def main():
             "Agent CLI started. Waiting for user input. Press Ctrl+C to exit. Type 'exit' or 'quit' to end the session."
         )
 
-    # Initialize LLM client
-    client = get_client(
-        "anthropic-direct",
-        model_name="claude-sonnet-4-20250514",
-        use_caching=True,
-    )
+    # Get configuration from CLI args or environment variables
+    llm_model = args.llm_model or os.getenv("LLM_MODEL")
+    llm_temperature = args.llm_temperature if args.llm_temperature is not None else float(os.getenv("LLM_TEMPERATURE", "0.0"))
+    llm_max_tokens = args.llm_max_tokens if args.llm_max_tokens is not None else int(os.getenv("LLM_MAX_TOKENS", "8192"))
+
+    # Set provider-specific defaults if model not specified
+    if not llm_model:
+        if llm_provider == "anthropic":
+            llm_model = "claude-sonnet-4-20250514"  # Keep existing default
+        elif llm_provider == "openai":
+            llm_model = "gpt-4"
+
+    # Build client configuration
+    client_kwargs = {
+        "model_name": llm_model,
+        "temperature": llm_temperature,
+        "max_tokens": llm_max_tokens,
+    }
+
+    # Add provider-specific parameters
+    if llm_provider == "anthropic":
+        client_kwargs.update({
+            "use_caching": True,  # Keep existing default
+            "thinking_tokens": 0,  # Keep existing default
+        })
+    elif llm_provider == "openai":
+        client_kwargs.update({
+            "cot_model": False,  # Keep existing default
+        })
+
+    # Initialize LLM client using existing get_client function
+    client_name = f"{llm_provider}-direct"
+    client = get_client(client_name, **client_kwargs)
 
     # Initialize workspace manager
     workspace_path = Path(args.workspace).resolve()

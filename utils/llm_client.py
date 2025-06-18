@@ -598,10 +598,37 @@ class OpenAIDirectClient(LLMClient):
 
 
 def get_client(client_name: str, **kwargs) -> LLMClient:
-    """Get a client for a given client name."""
+    """Get a client for a given client name.
+
+    This function filters the provided kwargs to only pass the parameters
+    that each client actually expects, making it more robust against
+    unexpected parameters.
+
+    Args:
+        client_name: The name of the client to create ("anthropic-direct" or "openai-direct")
+        **kwargs: Configuration parameters for the client
+
+    Returns:
+        LLMClient: The configured client instance
+
+    Raises:
+        ValueError: If client_name is not supported
+    """
     if client_name == "anthropic-direct":
-        return AnthropicDirectClient(**kwargs)
+        # Filter kwargs to only include parameters that AnthropicDirectClient expects
+        expected_params = {
+            'model_name', 'max_retries', 'use_caching', 'use_low_qos_server', 'thinking_tokens'
+        }
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k in expected_params}
+        return AnthropicDirectClient(**filtered_kwargs)
+
     elif client_name == "openai-direct":
-        return OpenAIDirectClient(**kwargs)
+        # Filter kwargs to only include parameters that OpenAIDirectClient expects
+        expected_params = {
+            'model_name', 'max_retries', 'cot_model'
+        }
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k in expected_params}
+        return OpenAIDirectClient(**filtered_kwargs)
+
     else:
         raise ValueError(f"Unknown client name: {client_name}")
